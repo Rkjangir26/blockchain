@@ -204,18 +204,88 @@ async function checkPriceAlerts(token: string, currentPrice: number) {
     }
 }
 
+// New function to get swap rate (ETH to BTC)
+async function getSwapRate(amountETH: number) {
+    try {
+        await initializeMoralis();
+
+        // Get ETH price
+        const ethResponse = await Moralis.EvmApi.token.getTokenPrice({
+            address: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH address
+            chain: '0x1'
+        });
+
+        // Get BTC price (using WBTC address)
+        const btcResponse = await Moralis.EvmApi.token.getTokenPrice({
+            address: '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599', // WBTC address
+            chain: '0x1'
+        });
+
+        const ethToUsdPrice = ethResponse.raw.usdPrice;
+        const btcToUsdPrice = btcResponse.raw.usdPrice;
+
+        // Calculate swap amounts
+        const totalUSD = amountETH * ethToUsdPrice;
+        const amountBTC = totalUSD / btcToUsdPrice;
+
+        // Calculate fees (0.03%)
+        const feePercentage = 0.0003;
+        const feeETH = amountETH * feePercentage;
+        const feeUSD = totalUSD * feePercentage;
+
+        return {
+            input: {
+                amount: amountETH,
+                currency: 'ETH'
+            },
+            output: {
+                amount: amountBTC.toFixed(8), // BTC typically uses 8 decimal places
+                currency: 'BTC'
+            },
+            exchangeRates: {
+                ETH_USD: ethToUsdPrice.toFixed(2),
+                BTC_USD: btcToUsdPrice.toFixed(2)
+            },
+            fees: {
+                percentage: "0.03%",
+                eth: feeETH.toFixed(6),
+                usd: feeUSD.toFixed(2)
+            },
+            timestamp: new Date().toISOString()
+        };
+    } catch (err) {
+        console.error('❌ Error calculating swap rate:', err);
+        throw err;
+    }
+}
+
+
+// Update your API handler
 // Update your API handler
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     try {
         await connectToDatabase();
 
         if (req.method === 'GET') {
+            // Handle hourly prices request
             if (req.query.type === 'hourlyPrices') {
                 const hourlyPrices = await getHourlyPrices();
                 return res.status(200).json(hourlyPrices);
             }
+            if (req.query.type === 'swapRate') {
+                const amountETH = parseFloat(req.query.amount as string);
+
+                if (!amountETH || amountETH <= 0) {
+                    return res.status(400).json({ 
+                        error: 'Please provide a valid positive ETH amount'
+                    });
+                }
+
+                const swapRate = await getSwapRate(amountETH);
+                return res.status(200).json(swapRate);
+            }
         } 
-        // New POST endpoint for setting alerts
+        // Handle POST request for setting alerts
         else if (req.method === 'POST' && req.query.type === 'setAlert') {
             const { token, targetPrice, email } = req.body;
 
@@ -264,16 +334,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
         
-        res.status(200).json({ 
+        // Default response with available endpoints
+        return res.status(200).json({ 
             message: 'Price tracker API',
             endpoints: {
                 'GET /api/prices?type=hourlyPrices': 'Get hourly prices for last 24 hours',
+                'GET /api/prices?type=swapRate&amount=1': 'Get swap rate for ETH to BTC conversion',
                 'POST /api/prices?type=setAlert': 'Set price alert with body: { token, targetPrice, email }'
             }
         });
     } catch (err) {
         console.error('API Error:', err);
-        res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({ error: 'Internal server error' });
     }
 }
 
